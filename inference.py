@@ -270,9 +270,11 @@ class Solver:
                     else:
                         if self.model_name[:3] == "gpt":
                             scores = self._gpt(prompt)
-                        if self.model_name[:3] == "opt":
+                        elif self.model_name[:3] == "opt":
                             scores = self._opt(prompt)
-                        if self.model_name == "null":
+                        elif self.model_name.startswith("llama_2"):
+                            scores = self._llama2(prompt)
+                        elif self.model_name == "null":
                             scores = 0
                     ret[i][j].append(scores)
                     self.choice_scores[choice] = scores
@@ -293,9 +295,11 @@ class Solver:
                 print(prompt)
             if self.model_name[:3] == "gpt":
                 scores = self._gpt(prompt)
-            if self.model_name[:3] == "opt":
+            elif self.model_name[:3] == "opt":
                 scores = self._opt(prompt)
-            if self.model_name == "null":
+            elif self.model_name.startswith("llama_2"):
+                scores = self._llama2(prompt)
+            elif self.model_name == "null":
                 scores = 0
             ret.append(scores)
         return ret
@@ -318,46 +322,85 @@ class Solver:
         return ret
 
     def _opt(self, prompt):
-        ret = {}
         input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
         tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0][1:])
         token_logprobs = []
-        logits = self.model(input_ids).logits
+        with torch.no_grad():
+            logits = self.model(input_ids).logits
+
         all_tokens_logprobs = log_softmax(logits.double(), dim=2)
         for k in range(1, input_ids.shape[1]):
             token_logprobs.append(all_tokens_logprobs[:,k-1,input_ids[0,k]])
         token_logprobs = [lp.detach().numpy()[0] for lp in token_logprobs]
         i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
         return {"tokens": tokens[i:], "token_logprobs": token_logprobs[i:]}
+    
+    def _llama2(self, prompt):
+        input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+        tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0][1:])
+        token_logprobs = []
+        with torch.no_grad():
+            logits = self.model(input_ids).logits
+
+        all_tokens_logprobs = log_softmax(logits.double(), dim=2)
+        for k in range(1, input_ids.shape[1]):
+            token_logprobs.append(all_tokens_logprobs[:,k-1,input_ids[0,k]])
+        token_logprobs = [lp.detach().numpy()[0] for lp in token_logprobs]
+        i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
+        return {"tokens": tokens[i:], "token_logprobs": token_logprobs[i:]}
+    
+
+def get_max_memory():
+    torch.cuda.empty_cache()
+    free_in_GB = int(torch.cuda.mem_get_info()[0]/1024**3)
+    max_memory = f"{free_in_GB-2}GB"
+    n_gpus = torch.cuda.device_count()
+    max_memory = {i: max_memory for i in range(n_gpus)}
+    print(f"max_memory: {max_memory}")
+    return max_memory
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name")
-    parser.add_argument("--api_key")
-    parser.add_argument("--config")
+    parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--model_path", type=str, default="")
+    parser.add_argument("--api_key", type=str, default="")
+    parser.add_argument("--config", type=str, required=True)
     parser.add_argument("-b", type=int)
     parser.add_argument("-n", type=int)
     parser.add_argument("--load_dir")
     parser.add_argument("--save_dir")
     parser.add_argument("--add_angle", action='store_true')
     args = parser.parse_args()
+    print(args.__dict__)
+
     model, tokenizer = None, None
     if args.model_name == "gpt-3":
         openai.api_key = args.api_key
-    if args.model_name[:3] == "opt":
-        torch.cuda.empty_cache()
-        free_in_GB = int(torch.cuda.mem_get_info()[0]/1024**3)
-        max_memory = f'{free_in_GB-2}GB'
-        n_gpus = torch.cuda.device_count()
-        max_memory = {i: max_memory for i in range(n_gpus)}
-        print(max_memory)
-        model = AutoModelForCausalLM.from_pretrained("facebook/"+args.model_name,
-                                                     device_map='auto',
-                                                     load_in_8bit=True,
-                                                     max_memory=max_memory)
-        tokenizer = AutoTokenizer.from_pretrained("facebook/"+args.model_name,
-                                                  use_fast=False)
+    elif args.model_name[:3] == "opt":
+        max_memory = get_max_memory()
+        model = AutoModelForCausalLM.from_pretrained(
+            "facebook/"+args.model_name,
+            device_map='auto',
+            load_in_8bit=True,
+            max_memory=max_memory,
+            cache_dir=".cache/huggingface",
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            "facebook/"+args.model_name,
+            use_fast=False
+        )
+    elif args.model_name.startswith("llama_2"):
+        max_memory = get_max_memory()
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            device_map="auto",
+            load_in_8bit=True,
+            max_memory=max_memory,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model.eval()
+
     s = Solver(args.model_name, model=model, tokenizer=tokenizer)
     s(args.config, args.load_dir, args.save_dir, b=args.b, n=args.n, add_angle=args.add_angle)
     return

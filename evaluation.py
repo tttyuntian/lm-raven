@@ -1,7 +1,8 @@
 import argparse
+import os
 import json
+
 import numpy as np
-from os.path import exists
 
 
 def load_data(path):
@@ -57,9 +58,31 @@ def evaluate(path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--path")
+    # parser.add_argument("--data_root", type=str, required=True)
+    parser.add_argument("--dataset", type=str, choices=["RAVEN-10000", "RAVEN-F", "I-RAVEN"], required=True)
+    parser.add_argument("--work_dir", type=str, required=True)
+    parser.add_argument("--figure_configuration", type=str, required=True)
+    parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument(
+        "--is_branch", type=str, required=True,
+        help="Whether or not to branch over components and attributes."
+    )
+    parser.add_argument(
+        "--num_rows", type=int, required=True,
+        help="Number of rows to include."
+    )
     args = parser.parse_args()
-    print(evaluate(args.path))
+    print(args.__dict__)
+
+    inference_file_path = os.path.join(args.work_dir, "data", args.dataset, f"{args.figure_configuration}_500_{args.model_name}_b{args.is_branch}_n{args.num_rows}.json")
+    performance = evaluate(inference_file_path)
+    print(performance)
+
+    output_dir = os.path.join(args.work_dir, "outputs", args.dataset, f"{args.model_name}_b{args.is_branch}_n{args.num_rows}", args.figure_configuration)
+    output_path = os.path.join(output_dir, "performance.json")
+    os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(performance, f, indent=4)
     return
 
 

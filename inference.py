@@ -13,15 +13,52 @@ from torch.nn.functional import log_softmax
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+TYPE_MAPPING = {
+    3: 1,
+    4: 2,
+    5: 3,
+    6: 4,
+    7: 5,
+}
+
+SIZE_MAPPING = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+}
+
+COLOR_MAPPING = {
+    0: 10,
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+    7: 7,
+    8: 8,
+    9: 9,
+}
+
+SHAPE_MAPPING = {}
+for type_id in TYPE_MAPPING:
+    for size_id in SIZE_MAPPING:
+        for color_id in COLOR_MAPPING:
+            SHAPE_MAPPING[str((type_id, size_id, color_id))] = len(SHAPE_MAPPING)
+
 
 class Shape:
-    def __init__(self, shape_dict, add_angle=False):
+    def __init__(self, shape_dict, add_angle=False, is_aggregated_information=False):
         self.type = self._type(shape_dict["Type"])
         self.size = self._size(shape_dict["Size"])
         self.color = self._color(shape_dict["Color"])
         if add_angle:
             self.angle = self._angle(shape_dict["Angle"])
         self.add_angle = add_angle
+        self.is_aggregated_information = is_aggregated_information
 
     def _type(self, x):
         return int(x) + 2
@@ -36,17 +73,26 @@ class Shape:
         return int(x)
 
     def __str__(self):
-        if self.add_angle:
-            return "({},{},{},{})".format(self.type, self.size/10,
-                                          self.color*10, self.angle*100)
+        if self.is_aggregated_information:
+            if self.add_angle:
+                raise NotImplementedError("No implementation for aggregated information with add_angle=True")
+            else:
+                shape = str(tuple([self.type, self.size, self.color]))
+                return "{}".format(SHAPE_MAPPING[shape])
         else:
-            return "({},{},{})".format(self.type, self.size/10, self.color*10)
+            if self.add_angle:
+                return "({},{},{},{})".format(self.type, self.size/10,
+                                            self.color*10, self.angle*100)
+            else:
+                # return "({},{},{})".format(self.type, self.size/10, self.color*10)
+                return "({},{},{})".format(self.type, self.size, self.color)
 
 
 class Grid:
-    def __init__(self, grid_dict, dim, add_angle=False):
+    def __init__(self, grid_dict, dim, add_angle=False, is_aggregated_information=False):
         self.dim = dim
         self.add_angle = add_angle
+        self.is_aggregated_information = is_aggregated_information
         self.coords = self._coords(grid_dict["positions"])
         self.shapes = self._shapes(grid_dict["entities"])
         self.types, self.sizes, self.colors, self.angles = self._split()
@@ -63,7 +109,10 @@ class Grid:
         return ret
 
     def _shapes(self, shape_dicts):
-        return [Shape(shape_dict, add_angle=self.add_angle) for shape_dict in shape_dicts]
+        return [
+            Shape(shape_dict, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information) 
+            for shape_dict in shape_dicts
+        ]
 
     def _split(self):
         types, sizes, colors, angles = [], [], [], []
@@ -140,20 +189,30 @@ class Branch:
 
 
 class Component:
-    def __init__(self, item_dicts, config, n=3, add_angle=False):
+    def __init__(self, item_dicts, config, n=3, add_angle=False, is_aggregated_information=False):
         self.config = config
         self.add_angle = add_angle
+        self.is_aggregated_information = is_aggregated_information
         self.items = self._items(item_dicts)
         self.branches = {}
         self._update(n)
 
     def _items(self, item_dicts):
         if self.config == "center_single":
-            return [Shape(item_dict, add_angle=self.add_angle) for item_dict in item_dicts]
+            return [
+                Shape(item_dict, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information) 
+                for item_dict in item_dicts
+            ]
         elif self.config == "distribute_four":
-            return [Grid(item_dict,2,add_angle=self.add_angle) for item_dict in item_dicts]
+            return [
+                Grid(item_dict,2,add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information)
+                for item_dict in item_dicts
+            ]
         else:
-            return [Grid(item_dict,3,add_angle=self.add_angle) for item_dict in item_dicts]
+            return [
+                Grid(item_dict,3,add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information) 
+                for item_dict in item_dicts
+            ]
 
     def _update(self, n):
         if self.config == "center_single":
@@ -176,10 +235,11 @@ class Component:
 
 
 class RPM:
-    def __init__(self, sample, config, n=3, add_angle=False):
+    def __init__(self, sample, config, n=3, add_angle=False, is_aggregated_information=False):
         self.config = config
         self.sample = sample
         self.add_angle = add_angle
+        self.is_aggregated_information = is_aggregated_information
         self.components = self._components(n)
         self.context = None
         self.choices = None
@@ -188,15 +248,21 @@ class RPM:
     def _components(self, n):
         item_dicts_0 = [self.sample["rpm"][j][0] for j in range(16)]
         if self.config == "center_single" or self.config[:10] == "distribute":
-            return [Component(item_dicts_0, self.config, n=n, add_angle=self.add_angle)]
+            return [
+                Component(item_dicts_0, self.config, n=n, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information)
+            ]
         else:
             item_dicts_1 = [self.sample["rpm"][j][1] for j in range(16)]
             if self.config == "in_distribute_four_out_center_single":
-                return [Component(item_dicts_0, "center_single", n=n, add_angle=self.add_angle),
-                        Component(item_dicts_1, "distribute_four", n=n, add_angle=self.add_angle)]
+                return [
+                    Component(item_dicts_0, "center_single", n=n, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information),
+                    Component(item_dicts_1, "distribute_four", n=n, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information)
+                ]
             else:
-                return [Component(item_dicts_0, "center_single", n=n, add_angle=self.add_angle),
-                        Component(item_dicts_1, "center_single", n=n, add_angle=self.add_angle)]
+                return [
+                    Component(item_dicts_0, "center_single", n=n, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information),
+                    Component(item_dicts_1, "center_single", n=n, add_angle=self.add_angle, is_aggregated_information=self.is_aggregated_information)
+                ]
 
     def _update(self, n):
         if self.config == "center_single" or self.config[:10] == "distribute":
@@ -221,16 +287,18 @@ class RPM:
 
 
 class Solver:
-    def __init__(self, model_name, model=None, tokenizer=None):
+    def __init__(self, model_name, model=None, tokenizer=None, is_true_inference=False):
         self.model_name = model_name
         self.model = model
         self.tokenizer = tokenizer
+        self.is_true_inference = is_true_inference
         self.output = {}
         self.prefix = "let's think step by step. "
+        # self.prefix = "You are a helpful assistant which determines whether a given sequence is correct or wrong. In each sequence, there are eight contexts and one answer candidate. When the answer candidate follows the patterns shown in contexts, you should say 'The sequence is correct'. Otherwise, you should say 'The sequence is wrong'.\n"
         self.context = None
         self.choice_scores = {}
 
-    def __call__(self, config, load_dir, save_dir, b=1, n=3, add_angle=False):
+    def __call__(self, config, load_dir, save_dir, b=1, n=3, add_angle=False, is_aggregated_information=False):
         with open("{}/{}.json".format(load_dir,config), "r") as f:
             samples = json.load(f)
         subset = json.load(open(load_dir+"/subset.json", 'r'))
@@ -239,19 +307,27 @@ class Solver:
                 continue
             sample = samples[str(i)]
             if b:
-                self.output[i] = self._split(sample, config, n=n, add_angle=add_angle)
+                self.output[i] = self._split(sample, config, n=n, add_angle=add_angle, is_aggregated_information=is_aggregated_information)
             else:
-                self.output[i] = self._merge(sample, config, n=n, add_angle=add_angle)
-        file_name = "{}/{}_500_{}_b{}_n{}.json".format(save_dir, config,
-                                                       self.model_name, b, n)
+                self.output[i] = self._merge(sample, config, n=n, add_angle=add_angle, is_aggregated_information=is_aggregated_information)
+        
+        if self.is_true_inference:
+            file_name = "{}/{}_500_{}_b{}_n{}_true_inference.json".format(
+                save_dir, config, self.model_name, b, n
+            )
+        else:
+            file_name = "{}/{}_500_{}_b{}_n{}.json".format(
+                save_dir, config, self.model_name, b, n
+            )
+
         if self.model_name != "null":
             json.dump(self.output, open(file_name, 'w'), indent=1)
             self.output, self.context = {}, None
         return
 
-    def _split(self, sample, config, n=3, add_angle=False):
+    def _split(self, sample, config, n=3, add_angle=False, is_aggregated_information=False):
         ret = []
-        rpm = RPM(sample, config, n=n, add_angle=add_angle)
+        rpm = RPM(sample, config, n=n, add_angle=add_angle, is_aggregated_information=is_aggregated_information)
         for i, component in enumerate(rpm.components):
             if self.model_name == "null":
                 print(sample["rules"][i])
@@ -263,6 +339,10 @@ class Solver:
                     prompt = self.context + choice
                     if n != 1:
                         prompt += ";"
+                    if (n == 3) and self.is_true_inference:
+                        self.context_with_choice = prompt
+                        prompt += "\nThis sequence is correct"
+
                     if self.model_name == "null":
                         print(prompt)
                     if choice in self.choice_scores.keys():
@@ -281,16 +361,21 @@ class Solver:
                 self.choice_scores = {}
         return ret
 
-    def _merge(self, sample, config, n=3, add_angle=False):
+    def _merge(self, sample, config, n=3, add_angle=False, is_aggregated_information=False):
         ret = []
-        rpm = RPM(sample, config, n=n, add_angle=add_angle)
+        rpm = RPM(sample, config, n=n, add_angle=add_angle, is_aggregated_information=is_aggregated_information)
         if self.model_name == "null":
             print(sample["rules"])
         self.context = self.prefix + rpm.context
+        # self.context = self.prefix + rpm.context + "\nAnswer: "
         for choice in rpm.choices:
             prompt = self.context + choice
             if n != 1:
                 prompt += ";"
+            if (n == 3) and self.is_true_inference:
+                self.context_with_choice = prompt
+                prompt += "\nThis sequence is correct"
+
             if self.model_name == "null":
                 print(prompt)
             if self.model_name[:3] == "gpt":
@@ -316,7 +401,12 @@ class Solver:
                                             presence_penalty=0,
                                             echo=True)
         logprobs = response["choices"][0]["logprobs"]
-        i = logprobs["text_offset"].index(len(self.context)-1)
+
+        if self.is_true_inference:
+            i = logprobs["text_offset"].index(len(self.context_with_choice)-1)
+        else:
+            i = logprobs["text_offset"].index(len(self.context)-1)
+            
         for k in ["tokens", "token_logprobs"]:
             ret[k] = logprobs[k][i:]
         return ret
@@ -332,7 +422,12 @@ class Solver:
         for k in range(1, input_ids.shape[1]):
             token_logprobs.append(all_tokens_logprobs[:,k-1,input_ids[0,k]])
         token_logprobs = [lp.detach().numpy()[0] for lp in token_logprobs]
-        i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
+
+        if self.is_true_inference:
+            # i = len(self.tokenizer(self.context_with_choice, return_tensors="pt").input_ids[0])
+            i = -1
+        else:
+            i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
         return {"tokens": tokens[i:], "token_logprobs": token_logprobs[i:]}
     
     def _llama2(self, prompt):
@@ -346,7 +441,12 @@ class Solver:
         for k in range(1, input_ids.shape[1]):
             token_logprobs.append(all_tokens_logprobs[:,k-1,input_ids[0,k]])
         token_logprobs = [lp.detach().numpy()[0] for lp in token_logprobs]
-        i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
+
+        if self.is_true_inference:
+            # i = len(self.tokenizer(self.context_with_choice, return_tensors="pt").input_ids[0])
+            i = -1
+        else:
+            i = len(self.tokenizer(self.context, return_tensors="pt").input_ids[0]) - 2
         return {"tokens": tokens[i:], "token_logprobs": token_logprobs[i:]}
     
 
@@ -370,7 +470,9 @@ def main():
     parser.add_argument("-n", type=int)
     parser.add_argument("--load_dir")
     parser.add_argument("--save_dir")
-    parser.add_argument("--add_angle", action='store_true')
+    parser.add_argument("--add_angle", action="store_true")
+    parser.add_argument("--is_aggregated_information", action="store_true")
+    parser.add_argument("--is_true_inference", action="store_true")
     args = parser.parse_args()
     print(args.__dict__)
 
@@ -399,10 +501,12 @@ def main():
             max_memory=max_memory,
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model.eval()
+    
+    if args.model_name != "null":
+        model.eval()
 
-    s = Solver(args.model_name, model=model, tokenizer=tokenizer)
-    s(args.config, args.load_dir, args.save_dir, b=args.b, n=args.n, add_angle=args.add_angle)
+    s = Solver(args.model_name, model=model, tokenizer=tokenizer, is_true_inference=args.is_true_inference)
+    s(args.config, args.load_dir, args.save_dir, b=args.b, n=args.n, add_angle=args.add_angle, is_aggregated_information=args.is_aggregated_information)
     return
 
 

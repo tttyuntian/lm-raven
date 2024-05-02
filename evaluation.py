@@ -11,8 +11,9 @@ def load_data(path):
     return data
 
 
-def evaluate(path):
-    b = int(path.split("_")[-2][-1])
+def evaluate(path, is_branch, is_true_inference):
+    # b = int(path.split("_")[-2][-1])
+    b = True if is_branch == 1 else False
     if b:
         ret = {"master": [0, 0], "ensemble": [0, 0]}
         data = load_data(path)
@@ -24,7 +25,10 @@ def evaluate(path):
                 ensemble_comp_logprobs = [0,0,0,0,0,0,0,0]
                 for branch_name, branch_dict in comp_dict.items():
                     for i in range(8):
-                        token_logprobs = branch_dict[i]["token_logprobs"]
+                        if is_true_inference:
+                            token_logprobs = [branch_dict[i]["token_logprobs"][-1]]
+                        else:
+                            token_logprobs = branch_dict[i]["token_logprobs"]
                         if branch_name == "master":
                             master_comp_logprobs[i] += (sum(token_logprobs)/len(token_logprobs))
                         else:
@@ -48,7 +52,10 @@ def evaluate(path):
         for prob_dict in data.values():
             logprobs = []
             for i in range(8):
-                token_logprobs = prob_dict[i]["token_logprobs"]
+                if is_true_inference:
+                    token_logprobs = [prob_dict[i]["token_logprobs"][-1]]
+                else:
+                    token_logprobs = prob_dict[i]["token_logprobs"]
                 logprobs.append(sum(token_logprobs)/len(token_logprobs))
             if logprobs[0] == max(logprobs):
                 ret[0] += 1
@@ -71,14 +78,21 @@ def main():
         "--num_rows", type=int, required=True,
         help="Number of rows to include."
     )
+    parser.add_argument("--is_true_inference", action="store_true")
     args = parser.parse_args()
     print(args.__dict__)
 
-    inference_file_path = os.path.join(args.work_dir, "data", args.dataset, f"{args.figure_configuration}_500_{args.model_name}_b{args.is_branch}_n{args.num_rows}.json")
-    performance = evaluate(inference_file_path)
+    if args.is_true_inference:
+        inference_file_path = os.path.join(args.work_dir, "data", args.dataset, f"{args.figure_configuration}_500_{args.model_name}_b{args.is_branch}_n{args.num_rows}_true_inference.json")
+    else:
+        inference_file_path = os.path.join(args.work_dir, "data", args.dataset, f"{args.figure_configuration}_500_{args.model_name}_b{args.is_branch}_n{args.num_rows}.json")
+    performance = evaluate(inference_file_path, args.is_branch, args.is_true_inference)
     print(performance)
 
-    output_dir = os.path.join(args.work_dir, "outputs", args.dataset, f"{args.model_name}_b{args.is_branch}_n{args.num_rows}", args.figure_configuration)
+    if args.is_true_inference:
+        output_dir = os.path.join(args.work_dir, "outputs", args.dataset, f"{args.model_name}_b{args.is_branch}_n{args.num_rows}_true_inference", args.figure_configuration)
+    else:
+        output_dir = os.path.join(args.work_dir, "outputs", args.dataset, f"{args.model_name}_b{args.is_branch}_n{args.num_rows}", args.figure_configuration)
     output_path = os.path.join(output_dir, "performance.json")
     os.makedirs(output_dir, exist_ok=True)
     with open(output_path, "w") as f:
